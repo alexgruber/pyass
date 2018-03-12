@@ -29,32 +29,30 @@ def KF(model, forcing, obs, R, H=None):
 
     x_ana, P_ana = np.full(len(forcing), np.nan), np.full(len(forcing), np.nan)
 
-    for t, f in forcing.iterrows():
+    for t, f in enumerate(forcing):
         x, P = model.step(f)
 
-        y = obs.loc[t,:]
-        x_upd, P_upd = analyse(x.values, y.values, P, R, H=H)
+        y = obs[t]
+        x_upd, P_upd = analyse(x, y, P, R, H=H)
 
         x_ana[t], P_ana[t] = x_upd, P_upd
-        model.x[:], model.P[:] = x_upd, P_upd
+        model.x, model.P = x_upd, P_upd
 
     return x_ana, P_ana
 
 
-def generate_ensemble(data, n_ens, perturbation=None):
+def generate_ensemble(data, n_ens, params):
 
-    ens = [data.copy() for n in np.arange(n_ens)]
-    if perturbation is not None:
-        for var, param in perturbation.iteritems():
-            pert = getattr(np.random, param[0])
-            for n in np.arange(n_ens):
-                if param[1] == 'additive':
-                    ens[n][var] = ens[n][var] + pert(0, np.sqrt(param[2]), len(data))
-                else:
-                    ens[n][var] = ens[n][var] * pert(0, np.sqrt(param[2]), len(data))
+    n_dates = len(data)
+    ens = data.repeat(n_ens).reshape(n_dates, n_ens)
+    pert = getattr(np.random, params[0])
+    for n in np.arange(n_ens):
+        if params[1] == 'additive':
+            ens[:, n] = ens[:, n] + pert(0, np.sqrt(params[2]), n_dates)
+        else:
+            ens[:, n] = ens[:, n] * pert(0, np.sqrt(params[2]), n_dates)
     return ens
 
-from timeit import default_timer
 
 def EnKF(model, forcing, obs, force_pert=None, obs_pert=None, H=None, n_ens=24):
 
@@ -63,32 +61,123 @@ def EnKF(model, forcing, obs, force_pert=None, obs_pert=None, H=None, n_ens=24):
     frc_ens = generate_ensemble(forcing, n_ens, force_pert)
     obs_ens = generate_ensemble(obs, n_ens, obs_pert)
 
-    x_ana = pd.DataFrame(index=forcing.index, columns=model.x.index, dtype='float')
-    P_ana = pd.DataFrame(index=forcing.index, columns=model.x.index, dtype='float')
+    n_dates = len(forcing)
+
+    x_ana = np.full(n_dates, np.nan)
+    P_ana = np.full(n_dates, np.nan)
 
     for t in np.arange(len(forcing)):
 
         # model step for each ensemble member
-        x_ens = np.full((n_ens, len(model.x)), np.nan)
-        y_ens = np.full((n_ens, len(obs.columns)), np.nan)
+        x_ens = np.full(n_ens, np.nan)
+        y_ens = np.full(n_ens, np.nan)
         for n in np.arange(n_ens):
-            x, P = mod_ens[n].step(frc_ens[n].loc[t,:])
-            x_ens[n][:] = x
-            y_ens[n][:] = obs_ens[n].loc[t,:]
+            x_ens[n], P = mod_ens[n].step(frc_ens[t, n])
+            y_ens[n] = obs_ens[t, n]
 
         # diagnose model and observation error from the ensemble
-        P = x_ens.var(axis=0)
-        R = y_ens.var(axis=0)
+        P = x_ens.var()
+        R = y_ens.var()
 
         # update state of each ensemble member
-        x_ens_upd = np.full((n_ens, len(model.x)), np.nan)
+        x_ens_upd = np.full(n_ens, np.nan)
         for n in np.arange(n_ens):
             x_ens_upd[n], P_ens_upd = analyse(x_ens[n], y_ens[n], P, R, H=H)
-            mod_ens[n].x[:] = x_ens_upd[n]
+            mod_ens[n].x = x_ens_upd[n]
 
         # diagnose analysis mean and -error
-        x_ana.loc[t,:] = x_ens_upd.mean(axis=0)
-        P_ana.loc[t,:] = x_ens_upd.var(axis=0)
+        x_ana[t] = x_ens_upd.mean()
+        P_ana[t] = x_ens_upd.var()
+
+    return x_ana, P_ana
+
+import matplotlib.pyplot as plt
+
+def AdaptEnKF(model, forcing, obs, H=None, n_ens=1, n_iter=1):
+
+    n_dates = len(forcing)
+
+    # Get initial values for R and Q
+    ol = np.array([deepcopy(model).step(f)[0] for f in forcing])
+    R = np.mean((obs-ol)**2)
+    Q = R * (1 - model.gamma**2)
+
+    c_obs_ol_ts = np.full(n_iter, np.nan)
+    c_obs_ana_ts = np.full(n_iter, np.nan)
+    c_ol_ana_ts = np.full(n_iter, np.nan)
+
+    R_ts = np.full(n_iter, np.nan)
+    Q_ts = np.full(n_iter, np.nan)
+
+    for k in np.arange(n_iter):
+
+        ol_ens = [deepcopy(model) for n in np.arange(n_ens)]
+        mod_ens = [deepcopy(model) for n in np.arange(n_ens)]
+
+        x_ol = np.full(n_dates, np.nan)
+        x_ana = np.full(n_dates, np.nan)
+        P_ana = np.full(n_dates, np.nan)
+
+        c_obs_ol = np.full(n_dates, np.nan)
+        c_obs_ana = np.full(n_dates, np.nan)
+        c_ol_ana = np.full(n_dates, np.nan)
+
+        frc_ens = generate_ensemble(forcing, n_ens, ['normal', 'additive', Q])
+        obs_ens = generate_ensemble(obs, n_ens, ['normal', 'additive', R])
+
+        for t in np.arange(n_dates):
+
+            # model step for each ensemble members
+            x_ol_ens = np.full(n_ens, np.nan)
+            x_ens = np.full(n_ens, np.nan)
+            y_ens = np.full(n_ens, np.nan)
+            for n in np.arange(n_ens):
+                x_ol_ens[n] = ol_ens[n].step(frc_ens[t, n])[0]
+                x_ens[n] = mod_ens[n].step(frc_ens[t, n])[0]
+                y_ens[n] = obs_ens[t, n]
+
+            # calculate OL mean
+            x_ol[t] = x_ol_ens.mean()
+
+            # diagnose model and observation error from the ensemble
+            P_est = x_ens.var()
+            R_est = y_ens.var()
+
+            # update state of each ensemble member
+            x_ens_upd = np.full(n_ens, np.nan)
+            for n in np.arange(n_ens):
+                x_ens_upd[n] = analyse(x_ens[n], y_ens[n], P_est, R_est, H=H)[0]
+                mod_ens[n].x = x_ens_upd[n]
+
+            # diagnose analysis mean and -error
+            x_ana[t] = x_ens_upd.mean()
+            P_ana[t] = x_ens_upd.var()
+
+            # diagnose error covariances
+            c_obs_ol[t] = np.cov(y_ens,x_ol_ens)[0,1]
+            c_obs_ana[t] = np.cov(y_ens,x_ens_upd)[0,1]
+            c_ol_ana[t] = np.cov(x_ol_ens,x_ens_upd)[0,1]
+
+        c_obs_ol = c_obs_ol.mean()
+        c_obs_ana = c_obs_ana.mean()
+        c_ol_ana = c_ol_ana.mean()
+
+        R = np.mean((obs - x_ol) * (obs - x_ana)) + c_obs_ana + c_obs_ol - c_ol_ana
+        Q = (np.mean((x_ol - obs) * (x_ol - x_ana)) + c_ol_ana + c_obs_ol - c_obs_ana) * (1 - model.gamma**2)
+
+        c_obs_ol_ts[k] = c_obs_ol
+        c_obs_ana_ts[k] = c_obs_ana
+        c_ol_ana_ts[k] = c_ol_ana
+
+        R_ts[k] = R
+        Q_ts[k] = Q
+
+    R0 = np.array(60).repeat(n_iter)
+    Q0 = np.array(40).repeat(n_iter)
+
+    # pd.DataFrame({'obs_ol': c_obs_ol_ts, 'obs_ana': c_obs_ana_ts, 'ol_ana':c_ol_ana_ts, 'R' : R_ts, 'Q': Q_ts, 'R0':R0, 'Q0':Q0}).plot()
+    pd.DataFrame({'R' : R_ts, 'Q': Q_ts, 'R_true':R0, 'Q_true':Q0}).plot()
+    plt.show()
 
     return x_ana, P_ana
 
