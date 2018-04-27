@@ -44,7 +44,6 @@ def KF(model, forcing, obs, R, H=None):
 
     return x_ana, P_ana
 
-
 def generate_ensemble(data, n_ens, params):
 
     n_dates = len(data)
@@ -58,7 +57,7 @@ def generate_ensemble(data, n_ens, params):
     return ens
 
 
-def EnKF(model, forcing, obs, force_pert=None, obs_pert=None, H=None, n_ens=24):
+def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
 
     mod_ens = [deepcopy(model) for n in np.arange(n_ens)]
 
@@ -78,26 +77,33 @@ def EnKF(model, forcing, obs, force_pert=None, obs_pert=None, H=None, n_ens=24):
         x_ens = np.full(n_ens, np.nan)
         y_ens = np.full(n_ens, np.nan)
         for n in np.arange(n_ens):
-            x_ens[n], P = mod_ens[n].step(frc_ens[t, n])
+            x_ens[n] = mod_ens[n].step(frc_ens[t, n])
             y_ens[n] = obs_ens[t, n]
 
-        # diagnose model and observation error from the ensemble
-        P = x_ens.var()
-        R = y_ens.var()
+        # check if there is an observation to assimilate
+        if ~np.isnan(obs[t]):
 
-        norm_innov[t] = (y_ens.mean() - x_ens.mean()) / np.sqrt(P + R)
+            # diagnose model and observation error from the ensemble
+            P = x_ens.var()
+            R = y_ens.var()
 
-        # update state of each ensemble member
-        x_ens_upd = np.full(n_ens, np.nan)
-        for n in np.arange(n_ens):
-            x_ens_upd[n], P_ens_upd = analyse(x_ens[n], y_ens[n], P, R, H=H)
-            mod_ens[n].x = x_ens_upd[n]
+            norm_innov[t] = (y_ens.mean() - x_ens.mean()) / np.sqrt(P + R)
 
-        # diagnose analysis mean and -error
-        x_ana[t] = x_ens_upd.mean()
-        P_ana[t] = x_ens_upd.var()
+            # update state of each ensemble member
+            x_ens_upd = np.full(n_ens, np.nan)
+            for n in np.arange(n_ens):
+                x_ens_upd[n], P_ens_upd = analyse(x_ens[n], y_ens[n], P, R, H=H)
+                mod_ens[n].x = x_ens_upd[n]
 
-    check_var = norm_innov.var()
+            # diagnose analysis mean and -error
+            x_ana[t] = x_ens_upd.mean()
+            P_ana[t] = x_ens_upd.var()
+        else:
+            x_ana[t] = x_ens.mean()
+            P_ana[t] = x_ens.var()
+
+
+    check_var = np.nanvar(norm_innov)
 
     return x_ana, P_ana, check_var
 
@@ -120,7 +126,7 @@ def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, gamma):
     return R, Q, H
 
 
-def MadEnKF(model, forcing, obs, n_ens=1, n_iter=1):
+def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
 
     n_dates = len(forcing)
 
