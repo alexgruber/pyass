@@ -10,23 +10,13 @@ from copy import deepcopy
 
 def analyse(x, y, P, R, H=None):
 
-
-    # x, y = np.atleast_1d(x), np.atleast_1d(y)
     if H is None:
-        H = 1
-        # H = np.identity(len(x))
-    # P, R, H = np.atleast_2d(P), np.atleast_2d(R), np.atleast_2d(H)
-
-    # K = dot(P, dot(transpose(H), inv(R + dot(H, dot(P, transpose(H))))))
-    # x_upd = x + dot(K, y - dot(H,x))
-    # P_upd = dot(np.identity(P.shape[0]) - dot(K, H), P)
-
-    # K = P * (H*R*H.T + P)**-1
+        H = 1.
     K = P * (H**2*R + P)**-1
+
     x_upd = x + K * (H*y - x)
     P_upd = (1 - K) * P
 
-    # return np.array(x_upd).flatten(), np.array(P_upd).flatten()
     return x_upd, P_upd
 
 def KF(model, forcing, obs, R, H=None):
@@ -44,7 +34,6 @@ def KF(model, forcing, obs, R, H=None):
 
     return x_ana, P_ana
 
-
 def generate_ensemble(data, n_ens, params):
 
     n_dates = len(data)
@@ -58,7 +47,10 @@ def generate_ensemble(data, n_ens, params):
     return ens
 
 
-def EnKF(model, forcing, obs, force_pert=None, obs_pert=None, H=None, n_ens=24):
+def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
+
+    if H is None:
+        H = 1.
 
     mod_ens = [deepcopy(model) for n in np.arange(n_ens)]
 
@@ -78,26 +70,33 @@ def EnKF(model, forcing, obs, force_pert=None, obs_pert=None, H=None, n_ens=24):
         x_ens = np.full(n_ens, np.nan)
         y_ens = np.full(n_ens, np.nan)
         for n in np.arange(n_ens):
-            x_ens[n], P = mod_ens[n].step(frc_ens[t, n])
+            x_ens[n] = mod_ens[n].step(frc_ens[t, n])
             y_ens[n] = obs_ens[t, n]
 
-        # diagnose model and observation error from the ensemble
-        P = x_ens.var()
-        R = y_ens.var()
+        # check if there is an observation to assimilate
+        if ~np.isnan(obs[t]):
 
-        norm_innov[t] = (y_ens.mean() - x_ens.mean()) / np.sqrt(P + R)
+            # diagnose model and observation error from the ensemble
+            P = x_ens.var(ddof=1)
+            R = y_ens.var(ddof=1)
 
-        # update state of each ensemble member
-        x_ens_upd = np.full(n_ens, np.nan)
-        for n in np.arange(n_ens):
-            x_ens_upd[n], P_ens_upd = analyse(x_ens[n], y_ens[n], P, R, H=H)
-            mod_ens[n].x = x_ens_upd[n]
+            norm_innov[t] = ((H*y_ens).mean() - x_ens.mean()) / np.sqrt(P + H**2*R)
 
-        # diagnose analysis mean and -error
-        x_ana[t] = x_ens_upd.mean()
-        P_ana[t] = x_ens_upd.var()
+            # update state of each ensemble member
+            x_ens_upd = np.full(n_ens, np.nan)
+            for n in np.arange(n_ens):
+                x_ens_upd[n], P_ens_upd = analyse(x_ens[n], y_ens[n], P, R, H=H)
+                mod_ens[n].x = x_ens_upd[n]
 
-    check_var = norm_innov.var()
+            # diagnose analysis mean and -error
+            x_ana[t] = x_ens_upd.mean()
+            P_ana[t] = x_ens_upd.var(ddof=1)
+        else:
+            x_ana[t] = x_ens.mean()
+            P_ana[t] = x_ens.var(ddof=1)
+
+
+    check_var = np.nanvar(norm_innov, ddof=1)
 
     return x_ana, P_ana, check_var
 
@@ -115,26 +114,26 @@ def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, gamma):
 
     H = C[1,2] / C[0,2]
 
-    Q = P * (1 - gamma**2)
+    Q = P * (1 - gamma ** 2)
 
     return R, Q, H
 
 
-def MadEnKF(model, forcing, obs, n_ens=1, n_iter=1):
+def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
 
     n_dates = len(forcing)
 
-    # Get initial values for R and Q
+    # Get initial values for P and Q
     ol = np.array([deepcopy(model).step(f) for f in forcing])
     R = np.nanmean((obs-ol)**2)
-    Q = R * (1 - model.gamma**2)
+    Q = R * (1 - model.gamma ** 2)
     H = 1
 
     for k in np.arange(n_iter):
 
         # iterative update of R and Q
         if k > 0:
-            R, Q, H =   TCA(y, x_ol, x_ana, c_obs_ol, c_obs_ana, c_ol_ana, model.gamma)
+            R, Q, H = TCA(y, x_ol, x_ana, c_obs_ol, c_obs_ana, c_ol_ana, model.gamma)
 
         # initialize variables
         dummy = np.full(n_dates, np.nan)
