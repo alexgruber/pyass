@@ -17,7 +17,7 @@ def analyse(x, y, P, R, H=None):
     x_upd = x + K * (H*y - x)
     P_upd = (1 - K) * P
 
-    return x_upd, P_upd
+    return x_upd, P_upd, K
 
 def KF(model, forcing, obs, R, H=None):
 
@@ -61,6 +61,7 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
 
     x_ana = np.full(n_dates, np.nan)
     P_ana = np.full(n_dates, np.nan)
+    K_arr = np.full(n_dates, np.nan)
 
     norm_innov = np.full(n_dates, np.nan)
 
@@ -69,6 +70,7 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
         # model step for each ensemble member
         x_ens = np.full(n_ens, np.nan)
         y_ens = np.full(n_ens, np.nan)
+        K_vec = np.full(n_ens, np.nan)
         for n in np.arange(n_ens):
             x_ens[n] = mod_ens[n].step(frc_ens[t, n])
             y_ens[n] = obs_ens[t, n]
@@ -85,8 +87,11 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
             # update state of each ensemble member
             x_ens_upd = np.full(n_ens, np.nan)
             for n in np.arange(n_ens):
-                x_ens_upd[n], P_ens_upd = analyse(x_ens[n], y_ens[n], P, R, H=H)
+                x_ens_upd[n], P_ens_upd, K_vec[n] = analyse(x_ens[n], y_ens[n], P, R, H=H)
                 mod_ens[n].x = x_ens_upd[n]
+
+            # Store Kalman gain
+            K_arr[t] = K_vec.mean()
 
             # diagnose analysis mean and -error
             x_ana[t] = x_ens_upd.mean()
@@ -95,10 +100,10 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
             x_ana[t] = x_ens.mean()
             P_ana[t] = x_ens.var(ddof=1)
 
-
     check_var = np.nanvar(norm_innov, ddof=1)
+    K = np.nanmean(K_arr)
 
-    return x_ana, P_ana, check_var
+    return x_ana, P_ana, check_var, K
 
 def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, gamma):
 
@@ -140,6 +145,7 @@ def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
         x_ol, x_ana, P_ana, y = dummy.copy(), dummy.copy(), dummy.copy(), dummy.copy()
         c_obs_ol, c_obs_ana, c_ol_ana = dummy.copy(), dummy.copy(), dummy.copy()
         norm_innov = dummy.copy()
+        K_arr = dummy.copy()
 
         # create model instance ensemble for OL run and filter run
         ol_ens = [deepcopy(model) for n in np.arange(n_ens)]
@@ -154,6 +160,7 @@ def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
 
             dummy = np.full(n_ens, np.nan)
             x_ens_ol, x_ens, x_ens_upd, y_ens = dummy.copy(), dummy.copy(), dummy.copy(), dummy.copy()
+            K_vec = dummy.copy()
 
             # Ensemble forecast
             for n in np.arange(n_ens):
@@ -175,8 +182,11 @@ def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
 
                 # Ensemble update
                 for n in np.arange(n_ens):
-                    x_ens_upd[n], P = analyse(x_ens[n], y_ens[n], P_est, R_est, H=H)
+                    x_ens_upd[n], P, K_vec[n] = analyse(x_ens[n], y_ens[n], P_est, R_est, H=H)
                     kf_ens[n].x = x_ens_upd[n]
+
+                # Store Kalman gain
+                K_arr[t] = K_vec.mean()
 
                 # Diagnose analysis mean and uncertainty
                 x_ana[t] = x_ens_upd.mean()
@@ -192,8 +202,9 @@ def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
                 P_ana[t] = x_ens.var()
 
         check_var = np.nanvar(norm_innov)
+        K = np.nanmean(K_arr)
 
-    return x_ana, P_ana, R, Q, H, check_var
+    return x_ana, P_ana, R, Q, H, check_var, K
 
 
 
