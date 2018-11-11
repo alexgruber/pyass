@@ -7,6 +7,7 @@ from numpy import dot
 
 from copy import deepcopy
 
+from scipy.stats import pearsonr
 
 def analyse(x, y, P, R, H=None):
 
@@ -125,6 +126,7 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
     P_ana = np.full(n_dates, np.nan)
     K_arr = np.full(n_dates, np.nan)
 
+    innov = np.full(n_dates, np.nan)
     norm_innov = np.full(n_dates, np.nan)
 
     for t in np.arange(len(forcing)):
@@ -144,6 +146,7 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
             P = x_ens.var(ddof=1)
             R = y_ens.var(ddof=1)
 
+            innov[t] = H*y_ens.mean() - x_ens.mean()
             norm_innov[t] = (H*(y_ens.mean()) - x_ens.mean()) / np.sqrt(P + H**2*R)
 
             # update state of each ensemble member
@@ -162,10 +165,15 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
             x_ana[t] = x_ens.mean()
             P_ana[t] = x_ens.var(ddof=1)
 
+    innov_l1 = innov[1::]
+    innov = innov[0:-1]
+    ind = np.where(~np.isnan(innov) & ~np.isnan(innov_l1))
+    R_innov = pearsonr(innov[ind], innov_l1[ind])[0]
+
     check_var = np.nanvar(norm_innov, ddof=1)
     K = np.nanmean(K_arr)
 
-    return x_ana, P_ana, check_var, K
+    return x_ana, P_ana, R_innov, check_var, K
 
 def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, gamma):
 
@@ -186,7 +194,7 @@ def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, gamma):
     return R, Q, H
 
 
-def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
+def MadKF(model, forcing, obs, n_ens=40, n_iter=10):
 
     n_dates = len(forcing)
 
@@ -206,6 +214,7 @@ def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
         dummy = np.full(n_dates, np.nan)
         x_ol, x_ana, P_ana, y = dummy.copy(), dummy.copy(), dummy.copy(), dummy.copy()
         c_obs_ol, c_obs_ana, c_ol_ana = dummy.copy(), dummy.copy(), dummy.copy()
+        innov = dummy.copy()
         norm_innov = dummy.copy()
         K_arr = dummy.copy()
 
@@ -237,9 +246,11 @@ def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
 
                 # Diagnose model and observation error variance
                 P_est = x_ens.var()
-                R_est = y_ens.var()
+                # R_est = y_ens.var()
+                R_est = R
 
                 # Store normalized innovations for self-consistency check
+                innov[t] = H*y[t] - x_ens.mean()
                 norm_innov[t] = (H*y[t] - x_ens.mean()) / np.sqrt(P_est + R_est * H**2)
 
                 # Ensemble update
@@ -263,10 +274,15 @@ def MadEnKF(model, forcing, obs, n_ens=40, n_iter=10):
                 x_ana[t] = x_ens.mean()
                 P_ana[t] = x_ens.var()
 
-        check_var = np.nanvar(norm_innov)
-        K = np.nanmean(K_arr)
+    innov_l1 = innov[1::]
+    innov = innov[0:-1]
+    ind = np.where(~np.isnan(innov)&~np.isnan(innov_l1))
+    R_innov = pearsonr(innov[ind], innov_l1[ind])[0]
 
-    return x_ana, P_ana, R, Q, H, check_var, K
+    check_var = np.nanvar(norm_innov)
+    K = np.nanmean(K_arr)
+
+    return x_ana, P_ana, R, Q, H, R_innov, check_var, K
 
 
 
