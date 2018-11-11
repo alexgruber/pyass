@@ -44,13 +44,14 @@ def analyse_2d(x, y, P, R, H=None):
 def KF(model, forcing, obs, R, H=None):
 
     dummy = np.full(len(forcing), np.nan)
-    x_ana, P_ana, norm_innov, K_arr = dummy.copy(), dummy.copy(), dummy.copy(), dummy.copy()
+    x_ana, P_ana, innov, norm_innov, K_arr = dummy.copy(), dummy.copy(), dummy.copy(), dummy.copy(), dummy.copy()
 
     for t, f in enumerate(forcing):
         x, P = model.step(f)
         y = obs[t]
 
         if not np.isnan(y):
+            innov[t] = (H*y - x)
             norm_innov[t] = (H*y - x) / np.sqrt(P + H**2 * R)
 
             x_ana[t], P_ana[t], K_arr[t] = analyse(x, y, P, R, H=H)
@@ -58,10 +59,15 @@ def KF(model, forcing, obs, R, H=None):
         else:
             x_ana[t], P_ana[t] = x, P
 
+    innov_l1 = innov[1::]
+    innov = innov[0:-1]
+    ind = np.where(~np.isnan(innov) & ~np.isnan(innov_l1))
+    R_innov = pearsonr(innov[ind], innov_l1[ind])[0]
+
     K = np.nanmean(K_arr)
     check_var = np.nanvar(norm_innov,ddof=1)
 
-    return x_ana, P_ana, check_var, K
+    return x_ana, P_ana, R_innov, check_var, K
 
 def KF_2D(model, forcing, obs1, obs2, R, H=None):
 
