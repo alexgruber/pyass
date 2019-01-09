@@ -115,15 +115,31 @@ def generate_ensemble(data, n_ens, params):
             ens[:, n] = ens[:, n] * pert(0, np.sqrt(params[2]), n_dates)
     return ens
 
+def generate_perturbations(n_dates, n_ens, params):
 
-def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
+    pdf = getattr(np.random, params[0])
+    pert = pdf(0, np.sqrt(params[1]), n_dates*n_ens).reshape((n_dates, n_ens))
+    return pert
+
+
+def EnKF(model, forcing, obs, obs_pert, force_pert=None, mod_pert=None, H=None, n_ens=24):
 
     if H is None:
         H = 1.
 
     mod_ens = [deepcopy(model) for n in np.arange(n_ens)]
 
-    frc_ens = generate_ensemble(forcing, n_ens, force_pert)
+    if force_pert is not None:
+        frc_ens = generate_ensemble(forcing, n_ens, force_pert)
+    else:
+        frc_ens = generate_ensemble(forcing, n_ens, ['normal', 'additive', 0])
+
+    if mod_pert is not None:
+        mod_err = generate_perturbations(len(forcing), n_ens, mod_pert)
+    else:
+        mod_err = generate_perturbations(len(forcing), n_ens, ['normal', 0])
+
+
     obs_ens = generate_ensemble(obs, n_ens, obs_pert)
 
     n_dates = len(forcing)
@@ -135,14 +151,14 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
     innov = np.full(n_dates, np.nan)
     norm_innov = np.full(n_dates, np.nan)
 
-    for t in np.arange(len(forcing)):
+    for t in np.arange(n_dates):
 
         # model step for each ensemble member
         x_ens = np.full(n_ens, np.nan)
         y_ens = np.full(n_ens, np.nan)
         K_vec = np.full(n_ens, np.nan)
         for n in np.arange(n_ens):
-            x_ens[n] = mod_ens[n].step(frc_ens[t, n])
+            x_ens[n] = mod_ens[n].step(frc_ens[t, n], err=mod_err[t, n])
             y_ens[n] = obs_ens[t, n]
 
         # check if there is an observation to assimilate
@@ -181,7 +197,7 @@ def EnKF(model, forcing, obs, force_pert, obs_pert, H=None, n_ens=24):
 
     return x_ana, P_ana, R_innov, check_var, K
 
-def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, gamma):
+def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana):
 
     mask = ~np.isnan(obs)
 
@@ -195,18 +211,17 @@ def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, gamma):
 
     H = C[1,2] / C[0,2]
 
-    Q = P * (1 - gamma ** 2)
-
-    return R, Q, H
+    return R, P, H
 
 
-def MadKF(model, forcing, obs, n_ens=40, n_iter=10):
+def MadKF(model, forcing, obs, n_ens=100, n_iter=20):
 
     n_dates = len(forcing)
 
     # Get initial values for P and Q
     ol = np.array([deepcopy(model).step(f) for f in forcing])
     R = np.nanmean((obs-ol)**2)
+    P_TC = R
     Q = R * (1 - model.gamma ** 2)
     H = 1
 
@@ -214,7 +229,8 @@ def MadKF(model, forcing, obs, n_ens=40, n_iter=10):
 
         # iterative update of R and Q
         if k > 0:
-            R, Q, H = TCA(y, x_ol, x_ana, c_obs_ol, c_obs_ana, c_ol_ana, model.gamma)
+            R, P_TC, H = TCA(y, x_ol, x_ana, c_obs_ol, c_obs_ana, c_ol_ana)
+            Q = P_TC * (1 - model.gamma ** 2)
 
         # initialize variables
         dummy = np.full(n_dates, np.nan)
@@ -229,8 +245,12 @@ def MadKF(model, forcing, obs, n_ens=40, n_iter=10):
         kf_ens = [deepcopy(model) for n in np.arange(n_ens)]
 
         # create forcing and observation ensemble
-        frc_ens = generate_ensemble(forcing, n_ens, ['normal', 'additive', Q])
         obs_ens = generate_ensemble(obs, n_ens, ['normal', 'additive', R])
+
+        frc_ens = generate_ensemble(forcing, n_ens, ['normal', 'additive', 0])
+
+        mod_pert = ['normal', Q]
+        mod_err = generate_perturbations(len(forcing), n_ens, mod_pert)
 
         # EnKF run
         for t in np.arange(n_dates):
@@ -239,11 +259,12 @@ def MadKF(model, forcing, obs, n_ens=40, n_iter=10):
             x_ens_ol, x_ens, x_ens_upd, y_ens = dummy.copy(), dummy.copy(), dummy.copy(), dummy.copy()
             K_vec = dummy.copy()
 
-            # Ensemble forecast
+            # Ensemble forecast + perturbation
             for n in np.arange(n_ens):
-                x_ens_ol[n] = ol_ens[n].step(frc_ens[t, n])
-                x_ens[n] = kf_ens[n].step(frc_ens[t, n])
+                x_ens_ol[n] = ol_ens[n].step(frc_ens[t, n], err=mod_err[t, n])
+                x_ens[n] = kf_ens[n].step(frc_ens[t, n], err=mod_err[t, n])
                 y_ens[n] = obs_ens[t, n]
+
             x_ol[t] = x_ens_ol.mean()
             y[t] = y_ens.mean()
 
@@ -252,7 +273,6 @@ def MadKF(model, forcing, obs, n_ens=40, n_iter=10):
 
                 # Diagnose model and observation error variance
                 P_est = x_ens.var()
-                # R_est = y_ens.var()
                 R_est = R
 
                 # Store normalized innovations for self-consistency check
@@ -288,7 +308,7 @@ def MadKF(model, forcing, obs, n_ens=40, n_iter=10):
     check_var = np.nanvar(norm_innov)
     K = np.nanmean(K_arr)
 
-    return x_ana, P_ana, R, Q, H, R_innov, check_var, K
+    return x_ana, P_ana, R, P_TC, H, R_innov, check_var, K
 
 
 
