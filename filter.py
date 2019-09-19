@@ -197,17 +197,20 @@ def EnKF(model, forcing, obs, obs_pert, force_pert=None, mod_pert=None, H=None, 
 
     return x_ana, P_ana, R_innov, check_var, K
 
-def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana):
+def TCA(obs, ol, ana, c_obs_ol, c_obs_ana, c_ol_ana, correct_crosscorr=True):
 
     mask = ~np.isnan(obs)
 
     C = np.cov(np.vstack((obs[mask],ol[mask],ana[mask])))
-    C[0,1] -= abs(c_obs_ol[mask].mean())
-    C[0,2] -= abs(c_obs_ana[mask].mean())
-    C[1,2] -= abs(c_ol_ana[mask].mean())
+    if correct_crosscorr is True:
+        C[0,1] -= abs(c_obs_ol[mask].mean())
+        C[0,2] -= abs(c_obs_ana[mask].mean())
+        C[1,2] -= abs(c_ol_ana[mask].mean())
 
-    R = abs(C[0,0] - abs(C[0,1] * C[0,2] / C[1,2]))
-    P = abs(C[1,1] - abs(C[0,1] * C[1,2] / C[0,2]))
+    # upper limit for uncertainties
+    max_var = (obs[mask]+ol[mask]).var()
+    R = min(abs(C[0,0] - abs(C[0,1] * C[0,2] / C[1,2])), max_var)
+    P = min(abs(C[1,1] - abs(C[0,1] * C[1,2] / C[0,2])), max_var)
 
     H = C[1,2] / C[0,2]
 
