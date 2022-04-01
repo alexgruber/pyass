@@ -13,10 +13,10 @@ def analyse(x, y, P, R, H=None):
 
     if H is None:
         H = 1.
-    K = P * (H**2*R + P)**-1
+    K = P*H * (R + H*P*H)**-1
 
-    x_upd = x + K * (H*y - x)
-    P_upd = (1 - K) * P
+    x_upd = x + K * (y - H*x)
+    P_upd = (1 - K*H) * P
 
     return x_upd, P_upd, K
 
